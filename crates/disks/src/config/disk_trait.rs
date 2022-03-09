@@ -68,17 +68,39 @@ pub trait DiskExt: BlockDeviceExt + SectorExt + PartitionTableExt {
 
         let check_partitions = || {
             self.get_partitions().iter().any(|partition| {
-                if partition.mount_point == Some(mount.into()) {
-                    return true;
+                let m = Path::new(mount);
+
+                for mount in &partition.mount_point {
+                    if mount == m {
+                        return true;
+                    }
                 }
 
-                partition.volume_group.as_ref().map_or(false, |&(ref vg, _)| {
-                    parent.get_logical_device(vg).map_or(false, |d| d.contains_mount(mount, parent))
-                })
+                if let Some(vg) = partition.lvm_vg.as_ref() {
+                    if let Some(device) = parent.get_logical_device(vg) {
+                        if device.contains_mount(mount, parent) {
+                            return true
+                        }
+                    }
+                }
+
+                false
             }) || check_sysfs()
         };
 
-        self.get_mount_point().map_or_else(check_partitions, |m| m == Path::new(mount))
+        let mounts = self.get_mount_point();
+
+        if mounts.is_empty() {
+            check_partitions()
+        } else {
+            for mount in mounts {
+                if mount == Path::new(mount) {
+                    return true
+                }
+            }
+
+            false
+        }
     }
 
     fn is_logical(&self) -> bool { Self::LOGICAL }
@@ -184,6 +206,10 @@ pub fn find_partition<'a, T: DiskExt>(
                     return Some((disk.get_device_path(), partition));
                 }
             }
+
+            if partition.subvolumes.get(target).is_some() {
+                return Some((disk.get_device_path(), partition));
+            }
         }
     }
     None
@@ -201,32 +227,29 @@ pub fn find_partition_mut<'a, T: DiskExt>(
         let disk = disk as *mut T;
 
         if let Some(partition) = unsafe { &mut *disk }.get_file_system_mut() {
-            // TODO: NLL
-            let mut found = false;
             if let Some(ref ptarget) = partition.target {
                 if ptarget == target {
-                    found = true;
+                    return Some((path, partition));
                 }
             }
 
-            if found {
+            if partition.subvolumes.get(target).is_some() {
                 return Some((path, partition));
             }
         }
 
         for partition in unsafe { &mut *disk }.get_partitions_mut() {
-            // TODO: NLL
-            let mut found = false;
             if let Some(ref ptarget) = partition.target {
                 if ptarget == target {
-                    found = true;
+                    return Some((path, partition));
                 }
             }
 
-            if found {
+            if partition.subvolumes.get(target).is_some() {
                 return Some((path, partition));
             }
         }
     }
+
     None
 }
